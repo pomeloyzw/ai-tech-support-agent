@@ -1,0 +1,29 @@
+# Web framework
+fastapi>=0.111.0,<0.112.0
+uvicorn[standard]>=0.29.0,<0.30.0
+
+# Gmail API
+google-api-python-client>=2.130.0,<3.0.0
+google-auth-httplib2>=0.2.0,<0.3.0
+google-auth-oauthlib>=1.2.0,<2.0.0
+
+# OCR
+pytesseract>=0.3.10,<0.4.0
+Pillow>=11.0.0,<12.0.0
+
+# PDF parsing
+pdfplumber>=0.11.0,<0.12.0
+
+# Async SQLite
+aiosqlite>=0.20.0,<0.21.0
+
+# Scheduler
+APScheduler>=3.10.4,<4.0.0
+
+# Config / settings
+pydantic-settings>=2.2.0,<3.0.0
+
+# HTML stripping (stdlib html.parser is used, no extra dep needed)
+
+# Utility
+python-multipart>=0.0.9,<0.1.0

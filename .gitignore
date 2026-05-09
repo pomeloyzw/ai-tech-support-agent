@@ -1,0 +1,25 @@
+# Environment
+.env
+*.env
+
+# OAuth token — contains a refresh token; keep secret
+token.json
+
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
