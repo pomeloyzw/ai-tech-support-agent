@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     gmail_sender_filter: str = ""
 
     # --- External services (placeholders) ------------------------------------
-    anthropic_api_key: str = ""
+    gemini_api_key: str = ""
     github_token: str = ""
 
     # --- Persistence ---------------------------------------------------------

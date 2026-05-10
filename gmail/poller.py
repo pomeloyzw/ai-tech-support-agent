@@ -33,6 +33,10 @@ from gmail.auth import get_gmail_service
 from models.case import CaseInput
 from preprocessor.parser import parse_message
 
+# Import lazily inside _trigger_orchestrator to avoid circular imports at
+# module load time.
+# from agent.orchestrator import process_case  # <-- used inside helper below
+
 logger = logging.getLogger(__name__)
 
 # Maximum number of retries for quota / transient Gmail API errors.
@@ -138,12 +142,14 @@ async def _process_message(service: Any, full_msg: dict[str, Any]) -> str:
         existing = await _fetch_case_by_thread(db, thread_id)
 
         if existing is None:
-            await _insert_new_case(db, case_input)
+            case_id = await _insert_new_case(db, case_input)
             logger.info(
                 "New case created for thread %s from %s",
                 thread_id,
                 case_input.client_email,
             )
+            # Fire-and-forget: run the triage + info-gap pipeline.
+            asyncio.create_task(_trigger_orchestrator(case_id))
             return "new"
 
         case_id: str = existing["id"]
@@ -154,14 +160,37 @@ async def _process_message(service: Any, full_msg: dict[str, Any]) -> str:
             logger.info(
                 "Case %s updated with reply (was pending_info → received).", case_id
             )
+            # Re-run triage + info-gap on the updated case.
+            asyncio.create_task(_trigger_orchestrator(case_id))
             return "updated"
 
-        logger.info(
-            "Skipping reply for thread %s — case status is %r (not pending_info).",
-            thread_id,
-            status,
+    logger.info(
+        "Skipping reply for thread %s — case status is %r (not pending_info).",
+        thread_id,
+        status,
+    )
+    return "skipped"
+
+
+async def _trigger_orchestrator(case_id: str) -> None:
+    """
+    Thin wrapper that imports and calls ``orchestrator.process_case``.
+
+    Imported lazily to avoid a circular import at module initialisation time
+    (poller → orchestrator → database → poller).  Exceptions are swallowed
+    here because ``process_case`` already handles its own error logging.
+    """
+    try:
+        from agent.orchestrator import process_case  # noqa: PLC0415
+
+        await process_case(case_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "_trigger_orchestrator: unexpected error for case %s: %s",
+            case_id,
+            exc,
+            exc_info=True,
         )
-        return "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -179,8 +208,8 @@ async def _fetch_case_by_thread(
     return await cursor.fetchone()
 
 
-async def _insert_new_case(db: Any, case_input: CaseInput) -> None:
-    """Insert a fresh case row from a ``CaseInput``."""
+async def _insert_new_case(db: Any, case_input: CaseInput) -> str:
+    """Insert a fresh case row from a ``CaseInput`` and return the new case UUID."""
     import uuid
     from datetime import datetime, timezone
 
@@ -206,6 +235,7 @@ async def _insert_new_case(db: Any, case_input: CaseInput) -> None:
             now,
         ),
     )
+    return case_id
 
 
 async def _append_reply(db: Any, case_id: str, case_input: CaseInput) -> None:

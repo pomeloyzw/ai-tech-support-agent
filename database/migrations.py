@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 """
 
+_CREATE_AGENT_LOGS = """
+CREATE TABLE IF NOT EXISTS agent_logs (
+    id              TEXT PRIMARY KEY,
+    case_id         TEXT NOT NULL REFERENCES cases(id),
+    step            TEXT NOT NULL,
+    input_json      TEXT,
+    output_json     TEXT,
+    tool_calls_json TEXT,
+    duration_ms     INTEGER,
+    created_at      TEXT NOT NULL
+);
+"""
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -66,4 +79,5 @@ async def run_migrations() -> None:
     async with get_db() as db:
         await db.execute(_CREATE_CASES)
         await db.execute(_CREATE_DRAFTS)
+        await db.execute(_CREATE_AGENT_LOGS)
     logger.info("Database migrations complete.")

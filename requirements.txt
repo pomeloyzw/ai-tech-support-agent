@@ -25,6 +25,9 @@ pydantic-settings>=2.2.0,<3.0.0
 
 # HTML stripping (stdlib html.parser is used, no extra dep needed)
 
+# Gemini SDK
+google-genai>=0.8.0,<1.0.0
+
 # Utility
 python-multipart>=0.0.9,<0.1.0
 
