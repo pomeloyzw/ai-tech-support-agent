@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     gmail_token_path: str = "token.json"
     gmail_support_address: str = "support@company.com"
     gmail_poll_interval_seconds: int = 60
+    # Leave empty to accept emails from any sender; set to an email address to
+    # restrict polling to messages from that specific sender only.
+    gmail_sender_filter: str = ""
 
     # --- External services (placeholders) ------------------------------------
     anthropic_api_key: str = ""

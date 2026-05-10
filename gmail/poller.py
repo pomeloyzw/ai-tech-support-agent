@@ -7,6 +7,8 @@ Polls the Gmail support inbox for unread messages every
 Algorithm
 ---------
 1. List unread messages addressed to ``GMAIL_SUPPORT_ADDRESS``.
+   If ``GMAIL_SENDER_FILTER`` is set, only messages *from* that address
+   are considered.
 2. For each message, fetch the full payload.
 3. Resolve whether the message belongs to a known thread (case) in SQLite.
    - **New thread** → parse + insert a new case (status ``received``).
@@ -221,7 +223,11 @@ def _list_unread_messages(service: Any) -> list[dict[str, Any]]:
     Return stub dicts ``{id, threadId}`` for all unread messages in the
     support inbox.  Retries up to ``_MAX_RETRIES`` times on quota errors.
     """
-    query = f"to:{settings.gmail_support_address} is:unread"
+    query_parts = [f"to:{settings.gmail_support_address}", "is:unread"]
+    if settings.gmail_sender_filter:
+        query_parts.append(f"from:{settings.gmail_sender_filter}")
+        logger.debug("Sender filter active: from:%s", settings.gmail_sender_filter)
+    query = " ".join(query_parts)
     messages: list[dict[str, Any]] = []
 
     for attempt in range(_MAX_RETRIES):
