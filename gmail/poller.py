@@ -40,6 +40,28 @@ _MAX_RETRIES = 3
 _BACKOFF_BASE = 2  # seconds; delay = base ** attempt
 
 
+def _make_attachment_fetcher(service: Any, msg_id: str):
+    """
+    Return a synchronous callable that fetches attachment bytes from Gmail.
+
+    The callable signature matches what ``parse_message`` expects:
+    ``(message_id: str, attachment_id: str) -> bytes``.
+    """
+    def _fetch(message_id: str, attachment_id: str) -> bytes:
+        response = (
+            service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+            .execute()
+        )
+        # Gmail returns base64url-encoded data.
+        data = response.get("data", "")
+        import base64
+        return base64.urlsafe_b64decode(data + "==" if data else b"")
+    return _fetch
+
+
 # ---------------------------------------------------------------------------
 # Public entry point (called by APScheduler)
 # ---------------------------------------------------------------------------
@@ -73,7 +95,7 @@ async def poll_inbox() -> None:
         msg_id: str = msg_stub["id"]
         try:
             full_msg = await asyncio.to_thread(_fetch_message, service, msg_id)
-            result = await _process_message(full_msg)
+            result = await _process_message(service, full_msg)
             if result == "new":
                 new_cases += 1
             elif result == "updated":
@@ -100,7 +122,7 @@ async def poll_inbox() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _process_message(full_msg: dict[str, Any]) -> str:
+async def _process_message(service: Any, full_msg: dict[str, Any]) -> str:
     """
     Decide what to do with a fetched Gmail message.
 
@@ -108,7 +130,9 @@ async def _process_message(full_msg: dict[str, Any]) -> str:
     """
     thread_id: str = full_msg["threadId"]
 
-    case_input: CaseInput = await asyncio.to_thread(parse_message, full_msg)
+    case_input: CaseInput = await asyncio.to_thread(
+        parse_message, full_msg, _make_attachment_fetcher(service, full_msg["id"])
+    )
 
     async with get_db() as db:
         existing = await _fetch_case_by_thread(db, thread_id)

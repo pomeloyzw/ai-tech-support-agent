@@ -30,7 +30,7 @@ import logging
 from datetime import datetime, timezone
 from email.utils import parseaddr
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Callable
 
 from models.case import AttachmentResult, CaseInput
 from preprocessor.attachments import extract_attachment
@@ -43,19 +43,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def parse_message(full_msg: dict[str, Any]) -> CaseInput:
+def parse_message(
+    full_msg: dict[str, Any],
+    attachment_fetcher: "Callable[[str, str], bytes] | None" = None,
+) -> CaseInput:
     """
     Parse a Gmail API message dict into a ``CaseInput``.
-
-    Attachment data bytes are collected but OCR / PDF extraction is **not**
-    performed here (it would block).  The caller should use
-    ``parse_message_async`` when running in an async context to get concurrent
-    attachment processing.
 
     Parameters
     ----------
     full_msg:
         A Gmail message resource with ``format='full'``.
+    attachment_fetcher:
+        Optional callable ``(message_id, attachment_id) -> bytes`` used to
+        fetch attachment data that Gmail did not inline in the message payload
+        (i.e. when ``body.data`` is absent but ``body.attachmentId`` is set).
+        Provide this when calling from the poller so large attachments are
+        not silently dropped.
 
     Returns
     -------
@@ -73,9 +77,10 @@ def parse_message(full_msg: dict[str, Any]) -> CaseInput:
     payload = full_msg.get("payload", {})
     plain_parts: list[str] = []
     html_parts: list[str] = []
-    raw_attachments: list[tuple[str, str, bytes]] = []  # (filename, content_type, data)
+    # Collect (filename, content_type, body_dict) — bytes resolved below.
+    pending: list[tuple[str, str, dict[str, Any]]] = []
 
-    _walk_parts(payload, plain_parts, html_parts, raw_attachments)
+    _walk_parts(payload, plain_parts, html_parts, pending)
 
     body_plain = "\n\n".join(plain_parts).strip()
     body_html = "\n\n".join(html_parts).strip()
@@ -87,9 +92,13 @@ def parse_message(full_msg: dict[str, Any]) -> CaseInput:
     else:
         body_text = ""
 
-    # Extract attachments synchronously (for callers that can't await).
+    # Resolve attachment bytes and extract text synchronously.
     attachment_results: list[AttachmentResult] = []
-    for filename, content_type, data in raw_attachments:
+    for filename, content_type, body_dict in pending:
+        data = _resolve_attachment_bytes(body_dict, msg_id, attachment_fetcher)
+        if data is None:
+            logger.warning("Skipping attachment %r — no data available.", filename)
+            continue
         result = extract_attachment(filename, content_type, data)
         attachment_results.append(result)
 
@@ -104,20 +113,20 @@ def parse_message(full_msg: dict[str, Any]) -> CaseInput:
     )
 
 
-async def parse_message_async(full_msg: dict[str, Any]) -> CaseInput:
+async def parse_message_async(
+    full_msg: dict[str, Any],
+    attachment_fetcher: "Callable[[str, str], bytes] | None" = None,
+) -> CaseInput:
     """
-    Async version of ``parse_message`` that runs attachment extraction
-    concurrently in a ``ThreadPoolExecutor``.
+    Async version of ``parse_message`` with concurrent attachment extraction.
 
     Parameters
     ----------
     full_msg:
         A Gmail message resource with ``format='full'``.
-
-    Returns
-    -------
-    CaseInput
-        Fully populated case input with all attachments extracted.
+    attachment_fetcher:
+        Same as ``parse_message`` — called synchronously inside
+        ``run_in_executor`` so the event loop is not blocked.
     """
     headers = _headers_dict(full_msg)
     thread_id: str = full_msg["threadId"]
@@ -130,9 +139,9 @@ async def parse_message_async(full_msg: dict[str, Any]) -> CaseInput:
     payload = full_msg.get("payload", {})
     plain_parts: list[str] = []
     html_parts: list[str] = []
-    raw_attachments: list[tuple[str, str, bytes]] = []
+    pending: list[tuple[str, str, dict[str, Any]]] = []
 
-    _walk_parts(payload, plain_parts, html_parts, raw_attachments)
+    _walk_parts(payload, plain_parts, html_parts, pending)
 
     body_plain = "\n\n".join(plain_parts).strip()
     body_html = "\n\n".join(html_parts).strip()
@@ -144,13 +153,22 @@ async def parse_message_async(full_msg: dict[str, Any]) -> CaseInput:
     else:
         body_text = ""
 
-    # Fan-out attachment extraction concurrently.
+    # Resolve bytes + extract text concurrently in the thread pool.
     loop = asyncio.get_event_loop()
+
+    def _resolve_and_extract(filename: str, content_type: str, body_dict: dict) -> AttachmentResult | None:
+        data = _resolve_attachment_bytes(body_dict, msg_id, attachment_fetcher)
+        if data is None:
+            logger.warning("Skipping attachment %r — no data available.", filename)
+            return None
+        return extract_attachment(filename, content_type, data)
+
     tasks = [
-        loop.run_in_executor(None, extract_attachment, filename, content_type, data)
-        for filename, content_type, data in raw_attachments
+        loop.run_in_executor(None, _resolve_and_extract, fn, ct, bd)
+        for fn, ct, bd in pending
     ]
-    attachment_results: list[AttachmentResult] = list(await asyncio.gather(*tasks))
+    results = await asyncio.gather(*tasks)
+    attachment_results: list[AttachmentResult] = [r for r in results if r is not None]
 
     return CaseInput(
         thread_id=thread_id,
@@ -172,11 +190,11 @@ def _walk_parts(
     part: dict[str, Any],
     plain_parts: list[str],
     html_parts: list[str],
-    raw_attachments: list[tuple[str, str, bytes]],
+    pending: list[tuple[str, str, dict[str, Any]]],
 ) -> None:
     """
     Recursively traverse a Gmail ``part`` tree, collecting body text and
-    raw attachment bytes.
+    pending attachment body dicts (resolved to bytes later).
 
     Parameters
     ----------
@@ -184,8 +202,10 @@ def _walk_parts(
         A Gmail message part (the top-level ``payload`` or any nested part).
     plain_parts / html_parts:
         Accumulate decoded body text strings.
-    raw_attachments:
-        Accumulates ``(filename, content_type, bytes)`` tuples.
+    pending:
+        Accumulates ``(filename, content_type, body_dict)`` tuples.  The body
+        dict may contain either ``data`` (inline base64) or ``attachmentId``
+        (reference requiring a separate API call) — both are handled later.
     """
     mime_type: str = part.get("mimeType", "")
     body: dict[str, Any] = part.get("body", {})
@@ -194,7 +214,7 @@ def _walk_parts(
     # Recurse into multipart containers.
     if mime_type.startswith("multipart/"):
         for sub in sub_parts:
-            _walk_parts(sub, plain_parts, html_parts, raw_attachments)
+            _walk_parts(sub, plain_parts, html_parts, pending)
         return
 
     # Body parts.
@@ -210,12 +230,11 @@ def _walk_parts(
             html_parts.append(data.decode("utf-8", errors="replace"))
         return
 
-    # Attachment parts.
+    # Attachment parts — collect body dict regardless of inline vs. by-ID.
     filename = _get_filename(part)
     if filename or _is_attachment(part):
-        attachment_data = _resolve_attachment_data(body)
-        if attachment_data:
-            raw_attachments.append((filename or "unknown", mime_type, attachment_data))
+        if body.get("data") or body.get("attachmentId"):
+            pending.append((filename or "unknown", mime_type, body))
 
 
 def _is_attachment(part: dict[str, Any]) -> bool:
@@ -244,15 +263,35 @@ def _get_filename(part: dict[str, Any]) -> str:
     return ""
 
 
-def _resolve_attachment_data(body: dict[str, Any]) -> bytes | None:
+def _resolve_attachment_bytes(
+    body: dict[str, Any],
+    msg_id: str,
+    fetcher: "Callable[[str, str], bytes] | None",
+) -> bytes | None:
     """
-    Return raw attachment bytes from the body dict.
-    Inline data (``body.data``) is preferred; ``attachmentId`` is not resolved
-    here (would require a second API call — the poller fetches ``format=full``
-    which includes inline data for most attachments).
+    Resolve attachment bytes from a Gmail part body dict.
+
+    Strategy
+    --------
+    1. If ``body.data`` is present (small attachment inlined by Gmail) →
+       decode and return it directly.
+    2. If ``body.attachmentId`` is present (large attachment stored server-
+       side) → call ``fetcher(msg_id, attachment_id)`` to retrieve it.
+    3. If neither is present → return ``None`` (unresolvable).
     """
     if body.get("data"):
         return _decode_body_data(body["data"])
+    attachment_id: str = body.get("attachmentId", "")
+    if attachment_id and fetcher is not None:
+        try:
+            return fetcher(msg_id, attachment_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Failed to fetch attachment %s for message %s: %s",
+                attachment_id,
+                msg_id,
+                exc,
+            )
     return None
 
 

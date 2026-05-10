@@ -200,3 +200,45 @@ async def list_cases() -> JSONResponse:
             rows.append(dict(row))
 
     return JSONResponse(content={"count": len(rows), "cases": rows})
+
+
+@app.get("/cases/{case_id}", summary="Get a single case (debug)")
+async def get_case(case_id: str) -> JSONResponse:
+    """
+    Return the full detail of one case by its UUID, including
+    ``raw_body`` and ``attachment_text`` (the extracted attachment content).
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT
+                id, thread_id, client_email, subject, status,
+                issue_type, severity, raw_body, attachment_text,
+                metadata_json, created_at, updated_at
+            FROM cases WHERE id = ?
+            """,
+            (case_id,),
+        )
+        row = await cursor.fetchone()
+
+    if row is None:
+        return JSONResponse(status_code=404, content={"error": "Case not found"})
+
+    return JSONResponse(content=dict(row))
+
+
+@app.delete("/cases", summary="Delete all cases (debug)")
+async def delete_all_cases() -> JSONResponse:
+    """
+    Truncate the ``cases`` and ``drafts`` tables.
+
+    **Development/debug only** — wipes all data so the poller can re-ingest
+    emails from scratch.  Does NOT unmark emails as unread in Gmail.
+    """
+    async with get_db() as db:
+        await db.execute("DELETE FROM drafts")
+        result = await db.execute("DELETE FROM cases")
+        deleted = result.rowcount
+
+    logger.warning("All cases deleted via DELETE /cases (%d rows removed).", deleted)
+    return JSONResponse(content={"deleted": deleted, "status": "ok"})
