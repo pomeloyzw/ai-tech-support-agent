@@ -4,6 +4,7 @@
 
 # OAuth token — contains a refresh token; keep secret
 token.json
+credentials.json
 
 # SQLite database
 *.db
