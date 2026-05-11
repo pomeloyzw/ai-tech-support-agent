@@ -8,6 +8,8 @@ AI Technical Support Agent is an automated, intelligent B2B SaaS support system 
 
 ## 🏗️ System Architecture
 
+![System Architecture](image.png)
+
 ```mermaid
 graph TD
     Client[Client Email] -->|SMTP/IMAP| Gmail[Gmail Inbox]
