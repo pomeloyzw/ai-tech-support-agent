@@ -80,4 +80,12 @@ async def run_migrations() -> None:
         await db.execute(_CREATE_CASES)
         await db.execute(_CREATE_DRAFTS)
         await db.execute(_CREATE_AGENT_LOGS)
+        
+        # Add escalation_note column for Step 6 dashboard
+        try:
+            await db.execute("ALTER TABLE cases ADD COLUMN escalation_note TEXT")
+        except aiosqlite.OperationalError as e:
+            # Fallback for SQLite < 3.32.0 if needed
+            if "duplicate column name" not in str(e):
+                raise
     logger.info("Database migrations complete.")

@@ -59,12 +59,14 @@ from typing import Any, AsyncIterator
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from database.connection import get_db
 from database.migrations import run_migrations
 from gmail.poller import poll_inbox
+from api.dashboard import router as dashboard_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -145,6 +147,14 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+app.include_router(dashboard_router)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+async def root():
+    # Redirect to the dashboard
+    return RedirectResponse(url="/static/index.html")
 
 
 @app.get("/health", summary="Health check")
