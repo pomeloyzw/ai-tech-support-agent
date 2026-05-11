@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     # --- External services (placeholders) ------------------------------------
     gemini_api_key: str = ""
     github_token: str = ""
+    github_repo: str = "org/repo-name"
+    github_default_branch: str = "main"
+    github_commit_lookback_days: int = 7
+
+    # --- Token budget controls ---
+    github_max_code_results: int = 3
+    github_max_commit_results: int = 5
+    github_max_files_per_commit: int = 10
+    github_code_context_lines: int = 3
+    email_body_max_chars: int = 800
+    attachment_text_max_chars: int = 400
 
     # --- Persistence ---------------------------------------------------------
     database_path: str = "./support_agent.db"

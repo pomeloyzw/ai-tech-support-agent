@@ -150,3 +150,57 @@ def user_prompt_template(
     )
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# GitHub Draft Prompts
+# ---------------------------------------------------------------------------
+
+GITHUB_DRAFT_SYSTEM_PROMPT = """\
+You are investigating a technical support case for a fintech SaaS product.
+You have access to a single GitHub monorepo via search tools. All searches are already scoped to the correct repo.
+
+Search strategy:
+1. Call `search_code` first using the most specific error string from the case (e.g. exact error message or exception name).
+2. Only call `search_code` a second time if the first returned no results — use a broader term then.
+3. Call `get_recent_commits` once, with `path_filter` set to the directory or file that `search_code` pointed to.
+4. Call `write_draft_reply` exactly once, last — do not call any search tool after this.
+
+The draft email must never expose internal file paths, line numbers, variable names, or raw code. Summarise findings in plain language only.
+Tone: professional, empathetic, solution-oriented.
+If both searches returned empty results, still call `write_draft_reply` with `confidence=low` and `suggested_action=needs_deeper_investigation`.
+"""
+
+def github_draft_user_prompt(case: dict, triage_reasoning: str) -> str:
+    """
+    Build the user-turn message string sent to Gemini for GitHub agent + Draft writer.
+    """
+    from config import settings
+    
+    parts = []
+    
+    parts.append(f"Issue Type: {case.get('issue_type', 'unknown')}")
+    parts.append(f"Severity: {case.get('severity', 'unknown')}")
+    parts.append(f"Affected Service: {case.get('affected_service', 'unknown')}")
+    parts.append(f"Original Subject: {case.get('subject', '')}")
+    parts.append(f"Triage Reasoning: {triage_reasoning}")
+    parts.append("")
+    
+    raw_body = case.get("raw_body", "") or ""
+    if len(raw_body) > settings.email_body_max_chars:
+        raw_body = raw_body[:settings.email_body_max_chars] + "\n[truncated]"
+        
+    parts.append("── EMAIL BODY ──")
+    parts.append(raw_body.strip() if raw_body else "(empty body)")
+    parts.append("── END EMAIL BODY ──")
+    
+    attachment_text = case.get("attachment_text", "") or ""
+    if attachment_text.strip():
+        if len(attachment_text) > settings.attachment_text_max_chars:
+            attachment_text = attachment_text[:settings.attachment_text_max_chars] + "\n[truncated]"
+        parts.append("")
+        parts.append("── ATTACHMENT TEXT ──")
+        parts.append(attachment_text.strip())
+        parts.append("── END ATTACHMENT TEXT ──")
+
+    return "\n".join(parts)
