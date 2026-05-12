@@ -59,6 +59,8 @@ class GeminiRateLimiter:
             self.last_call_time = time.monotonic()
 
 gemini_limiter = GeminiRateLimiter(rpm=14)
+# Gemini 3.1 Pro limits: RPM 25, TPM 2M, RPD 250
+gemini_pro_limiter = GeminiRateLimiter(rpm=25)
 
 # Maximum function-calling turns before giving up (guards against infinite loops).
 _MAX_TURNS = 6
@@ -445,9 +447,9 @@ async def run_github_and_draft(case_id: str, db: Any, triage_reasoning: str) -> 
     # Cap loop at 5 iterations
     for turn in range(5):
         try:
-            await gemini_limiter.acquire()
+            await gemini_pro_limiter.acquire()
             response = await client.aio.models.generate_content(
-                model="gemini-3.1-flash-lite-preview",
+                model="gemini-3.1-pro-preview",
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=GITHUB_DRAFT_SYSTEM_PROMPT,
@@ -465,10 +467,12 @@ async def run_github_and_draft(case_id: str, db: Any, triage_reasoning: str) -> 
             break
             
         if not response.candidates:
+            logger.warning("No candidates returned from Gemini for case %s.", case_id)
             break
             
         candidate = response.candidates[0]
         if not candidate.content.parts:
+            logger.warning("Empty candidate parts returned from Gemini for case %s.", case_id)
             break
             
         contents.append(candidate.content)
@@ -483,7 +487,7 @@ async def run_github_and_draft(case_id: str, db: Any, triage_reasoning: str) -> 
                 
             has_tool_call = True
             fc = part.function_call
-            args = dict(fc.args)
+            args = dict(fc.args) if fc.args is not None else {}
             
             all_tool_calls.append({"name": fc.name, "args": args})
             logger.debug("GitHub agent tool call (turn %d): %s(%s)", turn + 1, fc.name, args)
